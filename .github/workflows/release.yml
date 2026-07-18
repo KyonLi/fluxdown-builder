@@ -20,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: 'https://github.com/zerx-lab/FluxDown.git'
+          repository: 'zerx-lab/FluxDown'
           ref: ${{ github.event.inputs.version }}
 
       - name: Setup Bun
@@ -71,7 +71,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: 'https://github.com/zerx-lab/FluxDown.git'
+          repository: 'zerx-lab/FluxDown'
           ref: ${{ github.event.inputs.version }}
 
       - name: Get version from tag
