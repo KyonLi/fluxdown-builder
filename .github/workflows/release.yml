@@ -1,0 +1,182 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-web:
+    name: Build Server Web SPA
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'https://github.com/zerx-lab/FluxDown.git'
+          ref: ${{ github.event.inputs.version }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install web dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build web SPA
+        working-directory: web
+        run: bun run build
+
+      - name: Upload webroot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-webroot
+          path: web/dist
+
+  build-server-binaries:
+    name: Build Server (${{ matrix.platform }})
+    needs: build-web
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - platform: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - platform: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - platform: macos-x64
+            runner: macos-latest
+            target: x86_64-apple-darwin
+          - platform: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: 'https://github.com/zerx-lab/FluxDown.git'
+          ref: ${{ github.event.inputs.version }}
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # musl-gcc：ring/bundled-sqlite/zstd 等 C 依赖静态编译所需
+      - name: Install musl toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: server-${{ matrix.platform }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            server-${{ matrix.platform }}-
+
+      # FLUXDOWN_SERVER_VERSION：编译期注入 tag 版本号（/ping、stats、OpenAPI 显示）
+      - name: Build server binary
+        env:
+          FLUXDOWN_SERVER_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: cargo build --release --locked -p fluxdown_server --target ${{ matrix.target }}
+
+      - name: Download webroot artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server-webroot
+          path: webroot
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          PKG="fluxdown-server-${VERSION}-${{ matrix.platform }}"
+          mkdir -p "build/server/${PKG}" release-assets
+          cp "target/${{ matrix.target }}/release/fluxdown-server" "build/server/${PKG}/"
+          cp -r webroot "build/server/${PKG}/web"
+          tar -C build/server -czf "release-assets/FluxDown-Server-${VERSION}-${{ matrix.platform }}.tar.gz" "${PKG}"
+          ls -la release-assets/
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Version = "${{ steps.version.outputs.VERSION }}"
+          $Pkg = "fluxdown-server-$Version-${{ matrix.platform }}"
+          New-Item -ItemType Directory -Force -Path "build\server\$Pkg", "release-assets" | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\fluxdown-server.exe" "build\server\$Pkg\"
+          Copy-Item -Recurse "webroot" "build\server\$Pkg\web"
+          Compress-Archive -Path "build\server\$Pkg" -DestinationPath "release-assets\FluxDown-Server-$Version-${{ matrix.platform }}.zip"
+          Get-ChildItem release-assets
+
+      - name: Upload server binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-bin-${{ matrix.platform }}
+          path: release-assets/*
+
+  release-server:
+    name: Release Server
+    runs-on: ubuntu-latest
+    needs: build-server-binaries
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create and Push Tag
+        run: |
+          TAG_NAME="${{ github.event.inputs.version }}"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git tag $TAG_NAME
+          git push origin $TAG_NAME
+
+      - name: Download server artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: server-bin-*
+          path: release-assets/
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: List release assets
+        run: ls -la release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: FluxDown Server ${{ github.event.inputs.version }}
+          files: release-assets/*
+
