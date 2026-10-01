@@ -101,12 +101,16 @@ jobs:
           name: server-webroot
           path: webroot
 
-      # FLUXDOWN_SERVER_VERSION：编译期注入 tag 版本号（/ping、stats、OpenAPI 显示）
-      - name: Build server binary
+      # x86_64 目标使用基线 x86-64（RUSTFLAGS 整体替换 .cargo/config.toml 的 rustflags，
+      # 该文件当前只有 target-cpu 一项）；产品版本由 FLUXDOWN_APP_VERSION 注入。
+      - name: Build server binaries (agent + daemon)
         env:
-          FLUXDOWN_SERVER_VERSION: ${{ steps.version.outputs.VERSION }}
           FLUXDOWN_EMBED_WEBROOT: ${{ github.workspace }}/webroot
-        run: cargo build --release --locked -p fluxdown_server --target ${{ matrix.target }}
+          FLUXDOWN_APP_VERSION: ${{ steps.version.outputs.VERSION }}
+          RUSTFLAGS: ${{ startsWith(matrix.target, 'x86_64') && '-C target-cpu=x86-64' || '' }}
+        run: |
+          cargo build --release --locked -p fluxdown_agent --features web-ui --target ${{ matrix.target }}
+          cargo build --release --locked -p fluxdown_daemon --target ${{ matrix.target }}
 
       - name: Package (tar.gz)
         if: runner.os != 'Windows'
@@ -115,14 +119,14 @@ jobs:
           VERSION=${{ steps.version.outputs.VERSION }}
           PKG="fluxdown-server-${VERSION}-${{ matrix.platform }}"
           mkdir -p "build/server/${PKG}" release-assets
-          cp "target/${{ matrix.target }}/release/fluxdown-server" "build/server/${PKG}/"
-          cp -r webroot "build/server/${PKG}/web"
+          cp "target/${{ matrix.target }}/release/fluxdown-agent" "target/${{ matrix.target }}/release/fluxdownd" "build/server/${PKG}/"
           tar -C build/server -czf "release-assets/FluxDown-Server-${VERSION}-${{ matrix.platform }}.tar.gz" "${PKG}"
           ls -la release-assets/
 
       - name: Upload server binary artifact
         uses: actions/upload-artifact@v4
         with:
+          overwrite: true
           name: server-bin-${{ matrix.platform }}
           path: release-assets/*
 
