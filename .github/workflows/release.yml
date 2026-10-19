@@ -110,7 +110,7 @@ jobs:
           RUSTFLAGS: ${{ startsWith(matrix.target, 'x86_64') && '-C target-cpu=x86-64' || '' }}
         run: |
           cargo build --release --locked -p fluxdown_agent --features web-ui --target ${{ matrix.target }}
-          cargo build --release --locked -p fluxdown_daemon --target ${{ matrix.target }}
+          cargo build --release --locked -p fluxdown_daemon --no-default-features --target ${{ matrix.target }}
 
       - name: Package (tar.gz)
         if: runner.os != 'Windows'
